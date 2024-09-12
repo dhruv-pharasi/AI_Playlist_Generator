@@ -1,2 +1,4 @@
-# AI_Playlist_Generator
-Utilized the ChatGPT and Spotify APIs to generate playlists for a user based a textual prompt
+# AI Playlist Generator
+
+To use the playlist generator, an OpenAI API Key and a Spotify developer account would be required. The Spotify developer account will provide the 'client id' and 'client secret key', which are important to establish connection with the Spotify Web API.
+
