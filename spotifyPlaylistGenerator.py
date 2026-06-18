@@ -1,88 +1,184 @@
 """
-IMPORTANT:
+AI Playlist Generator - Backend Module
 
-- Lines 14 and 15: replace with your own OpenAI API key
-- Line 59: replace with your own Spotify client ID
-- Line 60: replace with your own Spofify secret key
+This module handles the core logic for generating AI-recommended playlists:
+1. Uses OpenAI's GPT-4o-mini to generate song recommendations based on user prompts
+2. Searches for those songs on Spotify
+3. Creates a private Spotify playlist and populates it with found tracks
+
+IMPORTANT: Requires .env file with the following keys:
+- API_KEY: Your OpenAI API key (get from https://platform.openai.com/api-keys)
+- CLIENT_ID: Your Spotify app's client ID
+- CLIENT_SECRET: Your Spotify app's client secret
+  (Get from https://developer.spotify.com/dashboard after creating an app)
 """
 
-
-import openai, spotipy, json
+import openai
+import spotipy
+import json
 from dotenv import dotenv_values
 
+# ============================================================================
+# CONFIGURATION LOADING
+# ============================================================================
 
+# Load environment variables from .env file (API keys and credentials)
 config = dotenv_values(".env")
+
+# Set the OpenAI API key for authenticating API requests
 openai.api_key = config["API_KEY"]
 
 
 def song_generator(prompt: str, num_songs):
+    """
+    Generate a list of song recommendations using OpenAI's GPT-4o-mini model.
 
+    This function uses few-shot prompting to guide GPT to generate song
+    recommendations in a consistent JSON format with artist and song names.
+
+    Args:
+        prompt (str): A natural language description of the desired songs
+                     (e.g., "upbeat party music" or "sad indie songs")
+        num_songs (int): The number of songs to recommend (typically 1-50)
+
+    Returns:
+        list: A list of dictionaries with 'artist' and 'song' keys, or None if
+              the API response cannot be parsed as JSON.
+
+    Raises:
+        None (errors are caught and logged, function returns None on failure)
+    """
+
+    # System prompt that instructs GPT on its role and task requirements
     system_prompt = """
-    You are a music recommendation expert specializing in curating Spotify playlists. 
-    Given a sentence describing the type of songs needed (e.g., 'songs for a party' or 'songs for a night drive'), 
-    provide a list of songs that match the mood, theme, or occasion. 
-    Each list should contain a mix of genres, moods, and tempos to keep it varied and interesting, while staying true to the theme. 
+    You are a music recommendation expert specializing in curating Spotify playlists.
+    Given a sentence describing the type of songs needed (e.g., 'songs for a party' or 'songs for a night drive'),
+    provide a list of songs that match the mood, theme, or occasion.
+    Each list should contain a mix of genres, moods, and tempos to keep it varied and interesting, while staying true to the theme.
     Ensure that the recommendations are diverse, popular, and suitable for the given context.
 
     Return the response as a JSON array of key-value pairs, where the keys are artist name and song name.
     """
 
+    # Call OpenAI's Chat Completion API with few-shot examples to guide response format
+    # Few-shot prompting improves response quality by showing examples of desired output
     response = openai.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role" : "system", "content" : system_prompt},
-            {"role" : "user", "content" : "Generate of playlist of 5 songs based on this prompt: hindi peaceful songs"},
-            {"role" : "assistant", "content" : """[ {"artist": "Arijit Singh", "song": "Tum Hi Ho"}, {"artist": "A. R. Rahman", "song": "Dil Se Re"}, {"artist": "Lata Mangeshkar", "song": "Tujhe Kitna Chahne Lage"}, {"artist": "Mohit Chauhan", "song": "Pee Loon"}, {"artist": "Sonu Nigam", "song": "Kal Ho Naa Ho"} ]"""},
-            {"role" : "user", "content" : "Generate of playlist of 4 songs based on this prompt: christmas party songs"},
-            {"role" : "assistant", "content" : """[ {"artist": "Mariah Carey", "song": "All I Want for Christmas Is You"}, {"artist": "Michael Bublé", "song": "It's Beginning to Look a Lot Like Christmas"}, {"artist": "Wham!", "song": "Last Christmas"}, {"artist": "Justin Bieber", "song": "Mistletoe"} ]"""},
-            {"role" : "user", "content" : f"Generate of playlist of {num_songs} songs based on this prompt: {prompt}"}
+            # System message: defines GPT's role and instructions
+            {"role": "system", "content": system_prompt},
+            # First few-shot example: user request for hindi peaceful songs
+            {"role": "user", "content": "Generate of playlist of 5 songs based on this prompt: hindi peaceful songs"},
+            # First few-shot example: expected response format with proper JSON structure
+            {"role": "assistant", "content": """[ {"artist": "Arijit Singh", "song": "Tum Hi Ho"}, {"artist": "A. R. Rahman", "song": "Dil Se Re"}, {"artist": "Lata Mangeshkar", "song": "Tujhe Kitna Chahne Lage"}, {"artist": "Mohit Chauhan", "song": "Pee Loon"}, {"artist": "Sonu Nigam", "song": "Kal Ho Naa Ho"} ]"""},
+            # Second few-shot example: user request for christmas songs
+            {"role": "user", "content": "Generate of playlist of 4 songs based on this prompt: christmas party songs"},
+            # Second few-shot example: expected response format
+            {"role": "assistant", "content": """[ {"artist": "Mariah Carey", "song": "All I Want for Christmas Is You"}, {"artist": "Michael Bublé", "song": "It's Beginning to Look a Lot Like Christmas"}, {"artist": "Wham!", "song": "Last Christmas"}, {"artist": "Justin Bieber", "song": "Mistletoe"} ]"""},
+            # Actual user request: the prompt and song count from the user
+            {"role": "user", "content": f"Generate a playlist of {num_songs} songs based on this prompt: {prompt}"}
         ]
     )
 
+    # Extract the text response from GPT and parse it as JSON
     try:
         return json.loads(response.choices[0].message.content)
     except json.decoder.JSONDecodeError:
+        # Log error and return None if response is not valid JSON
         print("\nOutput format generated by the ChatGPT API is invalid. Try again!")
         return None
 
 def spotify_playlist(prompt: str, num_songs) -> bool:
-    
-    # Get songs from the ChatGPT API
+    """
+    Create a Spotify playlist with AI-generated song recommendations.
+
+    This function orchestrates the entire playlist creation workflow:
+    1. Calls song_generator() to get AI recommendations from OpenAI
+    2. Authenticates with Spotify using OAuth
+    3. Searches for each recommended song on Spotify
+    4. Creates a private playlist
+    5. Populates the playlist with found tracks
+
+    Args:
+        prompt (str): A natural language description of the playlist theme
+                     (becomes the playlist name on Spotify)
+        num_songs (int): The number of songs to include in the playlist
+
+    Returns:
+        bool: True if playlist was successfully created and populated,
+              False if any step fails (invalid songs, auth failure, etc.)
+    """
+
+    # ========================================================================
+    # STEP 1: Generate song recommendations using OpenAI
+    # ========================================================================
+
+    # Call the song_generator function to get AI recommendations
     songs = song_generator(prompt, num_songs)
-    
+
+    # If OpenAI returns invalid JSON, abort the playlist creation
     if songs is None:
         return False
 
-    # Establish connection with Spotify's API
+    # ========================================================================
+    # STEP 2: Authenticate with Spotify API
+    # ========================================================================
+
+    # Create a Spotify client with OAuth authentication
+    # SpotifyOAuth handles the authentication flow:
+    # - Opens a browser for user login on first run
+    # - Saves tokens locally for future use
+    # - Automatically refreshes expired tokens
     spotify = spotipy.Spotify(
         auth_manager=spotipy.SpotifyOAuth(
-            client_id=config["CLIENT_ID"],  # replace
-            client_secret=config["CLIENT_SECRET"],  # replace
-            redirect_uri="http://localhost:8080",
-            scope="playlist-modify-private"
+            client_id=config["CLIENT_ID"],
+            client_secret=config["CLIENT_SECRET"],
+            redirect_uri="http://localhost:8080",  # Must match app settings in Spotify Developer Dashboard
+            scope="playlist-modify-private"  # Permission to create private playlists
         )
     )
 
-    # Get detailed profile information about the current user
+    # Retrieve the current authenticated user's profile information
     user = spotify.current_user()
 
+    # If user authentication fails, abort
     if not user:
         return False
 
+    # ========================================================================
+    # STEP 3: Search for AI-recommended songs on Spotify
+    # ========================================================================
+
+    # Set to store unique track IDs (prevents duplicates if multiple
+    # recommendations resolve to the same Spotify track)
     track_ids = set()
 
-    # Search for songs on Spotify
+    # Iterate through each AI-recommended song
     for song in songs:
+        # Construct the search query with both song name and artist for accuracy
         search_query = f"{song['song']} {song['artist']}"
+
+        # Search Spotify for matching tracks, requesting top 10 results
+        # Spotify's search uses fuzzy matching, so multiple results may be returned
         search_results = spotify.search(q=search_query, type="track", limit=10)
-        
+
+        # Iterate through the top 10 search results to find the best match
         for i in range(10):
+            # Extract the Spotify track ID from the search results
             id = search_results["tracks"]["items"][i]["id"]
+
+            # Only add the track if it hasn't already been added
+            # (This prevents duplicate tracks in the playlist)
             if id not in track_ids:
                 track_ids.add(id)
-                break
+                break  # Move to next song once a match is found
 
-    # Create Spotify playlist
+    # ========================================================================
+    # STEP 4: Create a private Spotify playlist
+    # ========================================================================
+
+    # Create a new private playlist with the user's prompt as the playlist name
+    # public=False ensures only the user can see the playlist
     playlist = spotify.user_playlist_create(
         user=user["id"],
         name=prompt,
@@ -90,12 +186,18 @@ def spotify_playlist(prompt: str, num_songs) -> bool:
         description="An AI generated playlist. Enjoy!"
     )
 
-    # Add songs to the playlist
+    # ========================================================================
+    # STEP 5: Add tracks to the playlist
+    # ========================================================================
+
+    # Add all the found tracks to the newly created playlist
+    # Convert the set of track IDs to a list (required by Spotify API)
     spotify.user_playlist_add_tracks(
         user=user["id"],
         playlist_id=playlist["id"],
         tracks=list(track_ids)
     )
 
+    # Return True to indicate successful playlist creation
     return True
 
